@@ -130,7 +130,7 @@ def test_corpo_cru_jpeg_e_request_id(client):
 
 def test_request_id_invalido_vira_uuid(client):
     r = client.post("/decode", content=png(qr_cinza()), headers={
-        "Content-Type": "image/png", "X-Request-Id": "não vale; drop table"})
+        "Content-Type": "image/png", "X-Request-Id": "nao vale; drop table"})
     assert r.status_code == 200
     assert len(r.json()["requisicao_id"]) == 32
 
