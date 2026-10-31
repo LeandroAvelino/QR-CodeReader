@@ -1,34 +1,61 @@
+# Produção na VPS: /docker/qrcode-reader/docker-compose.yml (+ .env com VERSAO=<versao>).
+# - SEM portas no host e SEM acesso à internet: a única rede é "qrcode_interno" (internal: true),
+#   compartilhada só com o n8n (cliente) e o alloy-n8n (telemetria). O serviço não busca nada fora.
+# - A imagem é construída no PC e carregada com docker load (não há build na VPS).
+# - Nenhum segredo: o .env só tem a versão.
+#
+#   cd /docker/qrcode-reader && docker compose up -d && docker compose ps
+#
+# Depois de subir, ligar n8n e alloy-n8n à rede (ver docs do plano, fase 3):
+#   definitivo: acrescentar "qrcode_interno" (external) nas redes dos composes deles e recriá-los;
+#   provisório: docker network connect qrcode_interno n8n-n8n-1 ; docker network connect qrcode_interno alloy-n8n
+#               (se perde quando o contêiner é recriado).
+name: qrcode-reader
+
 services:
-  api:
-    build: .
-    ports:
-      - "8000:8000"
+  qrcode-reader:
+    image: qrcode-reader:${VERSAO:?defina VERSAO no .env}
+    container_name: qrcode-reader
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      OTEL_SERVICE_NAME: qr-reader-api
-    depends_on:
-      - otel-collector
+      QR_TEMPO_LIMITE_MS: "8000"
+      QR_CONCORRENCIA: "1"
+      QR_MAX_BYTES: "10485760"
+      QR_MAX_PIXELS: "40000000"
+      QR_LADO_MAX: "2200"
+      QR_DOCS: "false"
+      OTEL_SERVICE_NAME: qrcode-reader
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=tivoli,deployment.environment.name=prod
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy-n8n:4320
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TIMEOUT: "3"
+      OTEL_METRICS_EXPORTER: none
+      OTEL_PYTHON_FASTAPI_EXCLUDED_URLS: health,ready,metrics
+    networks:
+      interno: {}
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1.0
+    pids_limit: 128
+    # Em falta de memória o kernel mata este antes de alloy-n8n (500), n8n e signer.
+    oom_score_adj: 800
+    ulimits:
+      nofile: { soft: 1024, hard: 1024 }
+    labels:
+      traefik.enable: "false"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.123.0
-    command: ["--config=/etc/otelcol/config.yaml"]
-    volumes:
-      - ./observability/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
-    depends_on:
-      - loki
-
-  loki:
-    image: grafana/loki:3.4
-    command: ["-config.file=/etc/loki/local-config.yaml"]
-
-  grafana:
-    image: grafana/grafana:11.6.0
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    volumes:
-      - ./observability/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
-    depends_on:
-      - loki
+networks:
+  interno:
+    name: qrcode_interno
+    internal: true
