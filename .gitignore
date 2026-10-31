@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 # imagens de teste com dados pessoais (notas fiscais reais)
 samples/
+# saídas do benchmark (podem conter fotos reais)
+bench/saida/
+*.tar.gz
