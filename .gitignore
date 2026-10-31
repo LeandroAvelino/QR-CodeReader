@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# imagens de teste com dados pessoais (notas fiscais reais)
+samples/

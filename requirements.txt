@@ -1,0 +1,12 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+# contrib 4.x: inclui o WeChatQRCode com suporte aos modelos Caffe
+opencv-contrib-python-headless>=4.9,<5
+pyzbar>=0.1.9
+zxing-cpp>=2.2
+numpy>=1.26
+python-multipart>=0.0.9
+opentelemetry-sdk>=1.25
+opentelemetry-exporter-otlp-proto-http>=1.25
+opentelemetry-instrumentation-fastapi>=0.46b0
+opentelemetry-instrumentation-logging>=0.46b0
