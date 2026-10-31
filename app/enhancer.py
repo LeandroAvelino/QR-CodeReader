@@ -86,56 +86,67 @@ def morph_repair(binary: np.ndarray) -> np.ndarray:
 
 
 def _threshold_variants(
-    gray: np.ndarray, prefix: list[str]
-) -> Iterator[tuple[np.ndarray, list[str]]]:
-    """Binarizações com e sem reparo morfológico, da mais barata à mais cara."""
+    gray: np.ndarray, prefix: list[str], nome: str
+) -> Iterator[tuple[np.ndarray, list[str], str]]:
+    """Binarizações com e sem reparo morfológico, da mais barata à mais cara.
+
+    ``nome`` é o prefixo do nome canônico da variante (ex.: "reduzida_")."""
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    yield otsu, prefix + ["otsu_threshold"]
-    yield morph_repair(otsu), prefix + ["otsu_threshold", "morph_repair"]
+    yield otsu, prefix + ["otsu_threshold"], nome + "otsu"
+    yield morph_repair(otsu), prefix + ["otsu_threshold", "morph_repair"], nome + "otsu_reparo"
 
     for block in (51, 101):
         adaptive = cv2.adaptiveThreshold(
             gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY, blockSize=block, C=10,
         )
-        yield adaptive, prefix + [f"adaptive_threshold_{block}"]
+        yield adaptive, prefix + [f"adaptive_threshold_{block}"], f"{nome}adapt{block}"
         yield morph_repair(adaptive), prefix + [
             f"adaptive_threshold_{block}", "morph_repair"
-        ]
+        ], f"{nome}adapt{block}_reparo"
 
 
-def variants(gray: np.ndarray, analysis: ImageAnalysis) -> Iterator[tuple[np.ndarray, list[str]]]:
+def variants(
+    gray: np.ndarray, analysis: ImageAnalysis
+) -> Iterator[tuple[np.ndarray, list[str], str]]:
     """Gera variantes da imagem, da menos à mais agressivamente tratada.
 
-    Cada item é (imagem, lista de passos aplicados).
+    Cada item é (imagem, passos aplicados, nome canônico da variante). O
+    gerador é preguiçoso: uma variante só é calculada quando pedida, então
+    quem consome pode parar no meio (orçamento de tempo esgotado).
+    O nome canônico tem valores fixos (uso em métricas, baixa cardinalidade).
     """
     # 1. Original, sem tratamento.
-    yield gray, []
+    yield gray, [], "original"
 
     # 2. Equalização dirigida pela análise.
     equalized, steps = equalize(gray, analysis)
     if steps:
-        yield equalized, steps
+        yield equalized, steps, "equalizada"
 
     # 3. Filtro de mediana: remove o pontilhado de impressões em meio-tom
     #    (contas e cupons impressos em jato de tinta/offset).
-    yield cv2.medianBlur(equalized, 3), steps + ["median_filter"]
+    yield cv2.medianBlur(equalized, 3), steps + ["median_filter"], "mediana"
 
     # 4. Fotos grandes: versão reduzida primeiro — mais rápida e tolera
     #    melhor distorções como papel curvado (os módulos ficam mais coesos).
+    base_agressiva = gray
     if analysis.is_large:
         reduced = downscale(equalized)
-        yield reduced, steps + ["downscale"]
-        yield cv2.medianBlur(reduced, 3), steps + ["downscale", "median_filter"]
-        yield from _threshold_variants(reduced, steps + ["downscale"])
+        yield reduced, steps + ["downscale"], "reduzida"
+        yield cv2.medianBlur(reduced, 3), steps + ["downscale", "median_filter"], "reduzida_mediana"
+        yield from _threshold_variants(reduced, steps + ["downscale"], "reduzida_")
+        base_agressiva = downscale(gray)
 
     # 5. Binarizações em resolução original, com reparo morfológico para
     #    impressões desbotadas.
-    yield from _threshold_variants(equalized, steps)
+    yield from _threshold_variants(equalized, steps, "")
 
     # 6. Último recurso: remoção de ruído + CLAHE forte + Otsu + reparo.
-    aggressive = denoise(gray)
+    #    Em foto grande roda na cópia reduzida: o denoise em resolução cheia
+    #    levaria segundos numa única chamada (não interrompível).
+    aggressive = denoise(base_agressiva)
     aggressive = apply_clahe(aggressive, clip_limit=4.0)
     if analysis.is_small:
         aggressive = upscale(aggressive)
@@ -143,7 +154,18 @@ def variants(gray: np.ndarray, analysis: ImageAnalysis) -> Iterator[tuple[np.nda
     _, aggressive = cv2.threshold(
         blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
-    yield aggressive, ["denoise", "clahe_strong", "otsu_threshold"]
-    yield morph_repair(aggressive), [
+    prefixo = ["downscale"] if analysis.is_large else []
+    yield aggressive, prefixo + ["denoise", "clahe_strong", "otsu_threshold"], "agressiva"
+    yield morph_repair(aggressive), prefixo + [
         "denoise", "clahe_strong", "otsu_threshold", "morph_repair"
-    ]
+    ], "agressiva_reparo"
+
+
+# Todos os nomes possíveis (para documentação e testes).
+NOMES_VARIANTES = (
+    "original", "equalizada", "mediana", "reduzida", "reduzida_mediana",
+    "reduzida_otsu", "reduzida_otsu_reparo", "reduzida_adapt51", "reduzida_adapt51_reparo",
+    "reduzida_adapt101", "reduzida_adapt101_reparo",
+    "otsu", "otsu_reparo", "adapt51", "adapt51_reparo", "adapt101", "adapt101_reparo",
+    "agressiva", "agressiva_reparo",
+)
