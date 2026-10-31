@@ -1,0 +1,10 @@
+# Dependências de teste (estágio "test" do Dockerfile), nas MESMAS versões do requirements.lock.
+# Gerado assim (num contêiner python:3.13-slim):
+#   1. lista "pacote==versão" do requirements.lock em versoes-producao.txt (arquivo temporário)
+#   2. uv pip compile --generate-hashes --python-version 3.13 --python-platform x86_64-manylinux_2_28 \
+#        -c versoes-producao.txt -o requirements-test.lock requirements-test.txt
+-r requirements.txt
+pytest>=8
+httpx>=0.27
+qrcode>=7.4
+pillow>=10

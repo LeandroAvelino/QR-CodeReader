@@ -1,12 +1,16 @@
+# Dependências diretas (faixas). A instalação usa requirements.lock (versões e hashes fixados),
+# gerado por: pip-compile --generate-hashes --strip-extras -o requirements.lock requirements.txt
 fastapi>=0.110
-uvicorn[standard]>=0.29
+# sem [standard]: h11 puro basta para o volume baixo (menos dependências nativas)
+uvicorn>=0.29
 # contrib 4.x: inclui o WeChatQRCode com suporte aos modelos Caffe
 opencv-contrib-python-headless>=4.9,<5
 pyzbar>=0.1.9
+# 2.2+: return_errors (distingue "QR detectado mas ilegível")
 zxing-cpp>=2.2
 numpy>=1.26
 python-multipart>=0.0.9
+prometheus-client>=0.20
 opentelemetry-sdk>=1.25
 opentelemetry-exporter-otlp-proto-http>=1.25
 opentelemetry-instrumentation-fastapi>=0.46b0
-opentelemetry-instrumentation-logging>=0.46b0
