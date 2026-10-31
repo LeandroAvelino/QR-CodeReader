@@ -3,155 +3,161 @@
 Backend leve para leitura de QR Codes com **equalização adaptativa de imagem**.
 A API recebe uma imagem, analisa como ela está (brilho, contraste e nitidez)
 e aplica apenas as correções necessárias para tornar o código legível antes
-de decodificá-lo.
+de decodificá-lo. Uso previsto: serviço **interno** do n8n (cadastro de cupons
+fiscais por foto), sem porta pública e sem acesso à internet.
 
 ## Como funciona
 
-1. **Análise** (`app/analyzer.py`): mede brilho médio, contraste
-   (desvio-padrão) e nitidez (variância do Laplaciano) e classifica a imagem
-   como escura, clara demais, de baixo contraste, borrada e/ou pequena.
-2. **Equalização adaptativa** (`app/enhancer.py`): gera variantes
-   progressivamente mais tratadas, dirigidas pela análise:
-   - correção de gamma (clarear/escurecer);
-   - CLAHE (equalização de histograma adaptativa) para contraste;
-   - unsharp mask para nitidez;
-   - upscale para imagens pequenas e downscale para fotos grandes (também
-     melhora a leitura de papel curvado, como cupons de bobina enrolados);
-   - filtro de mediana, que remove o pontilhado de impressões em meio-tom;
-   - binarização de Otsu e adaptativa (blocos 51 e 101);
-   - reparo morfológico (erosão leve) após a binarização, que reconecta
-     módulos falhados de impressões térmicas desbotadas;
-   - último recurso: remoção de ruído + CLAHE forte + Otsu + reparo.
-3. **Decodificação** (`app/decoder.py`): tenta ler cada variante com uma
-   cadeia de quatro decodificadores, do mais rápido ao mais pesado —
-   **pyzbar**, **zxing-cpp**, detector do **OpenCV** e **WeChatQRCode**
-   (CNN com super-resolução, o mais eficaz para códigos densos, impressos
-   em meio-tom ou danificados) — parando na primeira leitura bem-sucedida.
-   A imagem original é sempre a primeira tentativa, então imagens boas
-   respondem em milissegundos.
+1. **Validação** (`app/imagem.py`): tipo real pelos bytes (só **JPEG** e
+   **PNG**; TIFF, BMP, WebP e outros são recusados) e largura × altura lidas
+   do cabeçalho **antes** de descomprimir (anti "decompression bomb").
+2. **Carga em cinza com pré-redução** (`app/decoder.py`): foto com lado
+   maior acima de `QR_LADO_MAX` (2200 px) é lida já reduzida, para que cada
+   operação do pipeline seja curta.
+3. **Análise** (`app/analyzer.py`): brilho médio, contraste (desvio-padrão) e
+   nitidez (variância do Laplaciano); classifica a imagem como escura, clara
+   demais, de baixo contraste, borrada, pequena e/ou grande.
+4. **Equalização adaptativa** (`app/enhancer.py`): até 19 variantes, da mais
+   barata à mais cara (original, equalizada, mediana, reduzida, Otsu,
+   adaptativa 51/101, reparo morfológico, último recurso com denoise). Cada
+   variante tem um nome canônico (campo `estrategia` da resposta).
+5. **Decodificação**: em cada variante, pyzbar → zxing-cpp → OpenCV →
+   **WeChatQRCode** (CNN com super-resolução), parando na primeira leitura.
+6. **Orçamento de tempo** (`QR_TEMPO_LIMITE_MS`, padrão 8 s, máximo 15 s;
+   o cliente pode pedir menos com `X-Tempo-Limite-Ms`): conferido antes de
+   cada variante e de cada decodificador (cancelamento cooperativo).
 
 Os modelos CNN do WeChatQRCode (~1 MB) ficam em `models/wechat_qrcode/`
-(baixados do repositório oficial `opencv/opencv_zoo` /
-`WeChatCV/opencv_3rdparty`). Se os arquivos não existirem, a API continua
-funcionando com os demais decodificadores. O caminho pode ser alterado pela
-variável de ambiente `QR_WECHAT_MODELS`.
-
-## Instalação
-
-```powershell
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-```
-
-## Executando
-
-```powershell
-.venv\Scripts\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Documentação interativa (Swagger): http://localhost:8000/docs
-
-### Docker
-
-```bash
-docker build -t qr-reader-api .
-docker run -d --name qr-reader -p 8000:8000 qr-reader-api
-```
-
-A imagem (python:3.13-slim + libzbar0 + libglib2.0) roda como usuário sem
-privilégios e tem `HEALTHCHECK` apontando para `/health`.
-
-## Observabilidade (OpenTelemetry + Grafana)
-
-A aplicação exporta **logs e traces** via OTLP (`app/telemetry.py`). A
-exportação só é ativada quando `OTEL_EXPORTER_OTLP_ENDPOINT` está definida
-(ex.: `http://otel-collector:4318`); sem ela, os logs continuam indo para o
-console normalmente. O nome do serviço vem de `OTEL_SERVICE_NAME` (padrão
-`qr-reader-api`).
-
-Cada decodificação gera um log estruturado com os atributos `qr.success`,
-`qr.attempts`, `qr.decoder`, `qr.enhancements`, `qr.processing_time_ms` e
-`qr.filename` — úteis para dashboards de taxa de sucesso e latência.
-
-A stack completa para leitura no Grafana sobe com:
-
-```bash
-docker compose up -d --build
-```
-
-Fluxo: **API → OTel Collector (OTLP 4318) → Loki → Grafana**.
-O Grafana fica em http://localhost:3000 (admin/admin) com o datasource Loki
-já provisionado. Para ver os logs: Explore → Loki → consulta
-`{service_name="qr-reader-api"}`.
+(idênticos aos de `WeChatCV/opencv_3rdparty`, branch `wechat_qrcode`).
 
 ## Endpoints
 
 ### `POST /decode`
 
-Recebe a imagem como `multipart/form-data` (campo `file`). Formatos aceitos:
-JPEG, PNG, WebP, BMP, TIFF. Limite: 10 MB.
+Aceita a imagem de dois jeitos:
+
+- `multipart/form-data`, campo `file`;
+- **corpo cru** com `Content-Type: image/jpeg`, `image/png` ou
+  `application/octet-stream` (o jeito mais simples a partir de um nó Code do n8n).
+
+Cabeçalhos opcionais: `X-Request-Id` (`[A-Za-z0-9._:-]{1,64}`, devolvido no
+corpo e no cabeçalho; sem ele a API gera um), `X-Origem` (`n8n-cadastro`,
+`manual`, `teste`), `X-N8n-Execucao` (id numérico da execução, só para
+correlação), `X-Tempo-Limite-Ms`.
 
 ```bash
-curl -X POST http://localhost:8000/decode -F "file=@qrcode.jpg"
+curl -X POST http://qrcode-reader:8000/decode \
+     -H 'Content-Type: image/jpeg' -H 'X-Request-Id: teste-1' --data-binary @cupom.jpg
 ```
 
-Resposta:
+Resposta de leitura bem-sucedida:
 
 ```json
 {
   "success": true,
-  "codes": ["https://exemplo.com/pedido/12345"],
-  "analysis": {
-    "brightness": 54.3,
-    "contrast": 31.2,
-    "sharpness": 88.7,
-    "width": 450,
-    "height": 450,
-    "diagnostics": {
-      "dark": true,
-      "bright": false,
-      "low_contrast": true,
-      "blurry": true,
-      "small": false
-    }
-  },
-  "enhancements_applied": ["gamma_brighten", "clahe", "unsharp_mask"],
-  "attempts": 2,
-  "decoder": "pyzbar",
+  "codes": ["https://www.nfce.fazenda.sp.gov.br/qrcode?p=..."],
+  "motivo": null,
+  "orientacao": null,
+  "qr_detectado": true,
+  "estrategia": "reduzida",
+  "decoder": "zxing",
+  "attempts": 4,
+  "enhancements_applied": ["pre_reducao", "downscale"],
+  "analysis": {"width": 1920, "height": 2560, "brightness": 151.2, "contrast": 48.9, "sharpness": 63.1, "diagnostics": {"...": false}},
   "suggestion": null,
-  "processing_time_ms": 41.5
+  "processing_time_ms": 412.5,
+  "requisicao_id": "teste-1",
+  "versao": "0.2.0"
 }
 ```
 
-- `success: false` com HTTP 200 significa que a imagem é válida mas nenhum
-  QR Code foi encontrado, mesmo após todas as tentativas de equalização.
-  Nesse caso `suggestion` traz uma dica de recaptura em português, montada
-  a partir do diagnóstico (ex.: "fotografe em um ambiente mais iluminado";
-  se as métricas globais estão boas, orienta aproximar a câmera, esticar o
-  papel e fotografar de frente). Em leituras bem-sucedidas, `suggestion`
-  é `null`.
-- HTTP 400/413/415 indicam problemas com o arquivo enviado.
+Quando não lê, `success` é `false` e vêm dois campos estáveis:
 
-### `GET /health`
+- `motivo` (técnico, enumerado) e
+- `orientacao` (texto em pt-BR para mostrar ao usuário final, sempre o mesmo para cada motivo).
 
-Verificação de disponibilidade: `{"status": "ok"}`.
+| `motivo` | HTTP | Significado |
+|---|---|---|
+| `sem_qr` | 200 | nenhum QR Code foi detectado na imagem |
+| `qr_ilegivel` | 200 | um QR Code foi detectado (posição encontrada), mas não decodificou |
+| `tempo_esgotado` | 200 | o orçamento de tempo acabou antes de ler |
+| `imagem_invalida` | 400 | arquivo corrompido, vazio ou multipart sem o campo `file` |
+| `tipo_nao_suportado` | 415 | não é JPEG nem PNG (pelos bytes, não pelo `content-type`) |
+| `muito_grande` | 413 | arquivo acima de `QR_MAX_BYTES` (10 MB) |
+| `pixels_demais` | 413 | largura × altura acima de `QR_MAX_PIXELS` (40 Mpx) |
+| `ocupado` | 503 | já há uma leitura em andamento (`QR_CONCORRENCIA`); `Retry-After: 5` |
+| `erro_interno` | 500 | falha inesperada |
 
-## Testes
+Exemplo: `{"success": false, "motivo": "sem_qr", "orientacao": "Não encontrei o QR Code na foto. Envie uma nova foto com o QR Code inteiro aparecendo, de perto, com boa luz e sem reflexo.", "suggestion": "...dica pelo diagnóstico..."}`.
+O texto de cada motivo está em `ORIENTACOES` (`app/decoder.py`). `suggestion` continua
+trazendo a dica montada pelo diagnóstico da imagem (pode variar).
 
-```powershell
-.venv\Scripts\python -m pip install qrcode pillow httpx pytest
-.venv\Scripts\python -m pytest tests -v
+### `GET /health`, `GET /ready`, `GET /metrics`
+
+- `/health`: vivo (`{"status":"ok","versao":...}`); responde mesmo durante uma leitura longa.
+- `/ready`: 200 só se os modelos WeChatQRCode estiverem carregados.
+- `/metrics`: métricas Prometheus (`qrcode_requisicoes_total`, `qrcode_leitura_duracao_seconds`,
+  `qrcode_estrategia_total`, `qrcode_tentativas`, `qrcode_imagem_bytes`, `qrcode_imagem_megapixels`,
+  `qrcode_falhas_total`, `qrcode_em_andamento`, `qrcode_build_info` e `process_*`).
+
+`/docs` (Swagger) só existe com `QR_DOCS=true` (desligado na imagem de produção).
+
+## Logs e traces
+
+- Console: uma linha JSON por evento. Evento de leitura `qrcode.leitura` com
+  `requisicao_id`, `origem`, `resultado`, `motivo`, `estrategia`, `decodificador`,
+  `tentativas`, `duracao_ms`, `tamanho_bytes`, `largura`, `altura`, `diagnostico`.
+  Recusas (400/413/415/503) geram `qrcode.recusa`.
+- **Nunca** vão para o log: o conteúdo do QR Code, o nome do arquivo, CPF/CNPJ ou a imagem.
+- OTLP (logs e traces): só com `OTEL_EXPORTER_OTLP_ENDPOINT` definida
+  (ex.: `http://alloy-n8n:4320`); `OTEL_SERVICE_NAME` padrão `qrcode-reader`.
+  Cada leitura tem um span `qrcode.decodificar`.
+
+## Docker
+
+```bash
+docker build -t qrcode-reader:0.2.0 --build-arg VERSAO=0.2.0 .
 ```
 
-Os testes geram QR Codes e aplicam degradações (escuridão, excesso de
-brilho, baixo contraste, desfoque, redução de tamanho e ruído) para
-verificar que o pipeline recupera a legibilidade.
+O `Dockerfile` tem 3 estágios: `build` (venv com `requirements.lock`, versões e
+hashes fixados), `test` (roda o pytest; a imagem final só é montada se passar) e
+`runtime` (python slim + libzbar, usuário 10001, `QR_DOCS=false`,
+`OPENCV_IO_MAX_IMAGE_PIXELS`). Base fixada por digest.
+
+O `docker-compose.yml` é o de **produção**: sem portas no host, filesystem
+somente leitura (`tmpfs` em `/tmp`), `cap_drop: ALL`, limites de CPU/memória/
+processos e rede `qrcode_interno` com `internal: true` (sem internet),
+compartilhada só com o n8n e o coletor de telemetria. Teste local:
+
+```bash
+docker run --rm -p 127.0.0.1:18080:8000 --read-only --tmpfs /tmp --cap-drop ALL \
+  --memory 768m --cpus 1 qrcode-reader:0.2.0
+```
+
+## Testes e benchmark
+
+```bash
+docker build --target test -t qrcode-reader-test .        # roda o pytest
+docker run --rm --cpus 1 --memory 768m -v "$PWD/samples:/fotos:ro" -v "$PWD/bench/saida:/saida" \
+  qrcode-reader-test python -m bench.benchmark /fotos /saida
+```
+
+Fotos reais (cupons com dados pessoais) ficam em `samples/` e saídas em
+`bench/saida/`, ambos fora do Git.
+
+## Dependências
+
+`requirements.txt` (faixas) → `requirements.lock` (fixado com hashes):
+
+```bash
+pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock requirements.txt
+```
+
+`requirements-test.lock` é gerado com as mesmas versões (restrição pelo
+`requirements.lock`) mais pytest, httpx, qrcode e pillow.
 
 ## Ajuste de parâmetros
 
-Os limiares que classificam a imagem ficam em `app/analyzer.py`
-(`BRIGHTNESS_LOW`, `BRIGHTNESS_HIGH`, `CONTRAST_LOW`, `SHARPNESS_LOW`,
-`MIN_DIMENSION`). Ajuste-os conforme o perfil das imagens recebidas em
-produção. O campo `enhancements_applied` da resposta mostra o que foi
-necessário em cada leitura — útil para calibrar esses valores ou, no
-futuro, treinar um modelo com os casos reais.
+Limiares da análise em `app/analyzer.py`; limites operacionais por variável de
+ambiente em `app/config.py` (`QR_TEMPO_LIMITE_MS`, `QR_CONCORRENCIA`,
+`QR_MAX_BYTES`, `QR_MAX_PIXELS`, `QR_LADO_MAX`, `QR_DOCS`, `QR_VERSAO`).
