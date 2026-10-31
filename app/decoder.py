@@ -90,8 +90,9 @@ class Prazo:
         self.inicio = time.perf_counter()
         self.limite = limite_ms / 1000.0
 
-    def esgotado(self) -> bool:
-        return time.perf_counter() - self.inicio >= self.limite
+    def esgotado(self, estimativa: float = 0.0) -> bool:
+        """Esgotado se o tempo acabou ou se a próxima chamada (estimada) não cabe no que resta."""
+        return time.perf_counter() - self.inicio + estimativa >= self.limite
 
     def decorrido_ms(self) -> float:
         return round((time.perf_counter() - self.inicio) * 1000, 2)
@@ -232,14 +233,19 @@ def decode_image(
         result.processing_time_ms = prazo.decorrido_ms()
         return result
 
+    # Maior duração já vista de cada decodificador nesta leitura: se a próxima chamada
+    # não cabe no tempo que resta, para antes (o prazo não estoura por uma chamada longa).
+    maior: dict[str, float] = {}
     for image, steps, nome in variants(gray, analysis):
         if prazo.esgotado():
             return terminar("tempo_esgotado")
         result.attempts += 1
         for decoder_name, decoder in _CADEIA:
-            if prazo.esgotado():
+            if prazo.esgotado(maior.get(decoder_name, 0.0)):
                 return terminar("tempo_esgotado")
+            t0 = time.perf_counter()
             codes, detectado = decoder(image)
+            maior[decoder_name] = max(maior.get(decoder_name, 0.0), time.perf_counter() - t0)
             result.qr_detectado = result.qr_detectado or detectado
             codes = [c.lstrip("﻿").strip() for c in codes]
             codes = [c for c in codes if c]
