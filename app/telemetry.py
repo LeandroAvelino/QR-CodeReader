@@ -70,10 +70,9 @@ def _configurar_otlp_logs(resource: Resource) -> None:
     from opentelemetry.sdk._logs import LoggerProvider
     from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 
-    try:  # o LoggingHandler mudou de pacote entre versões do OpenTelemetry
-        from opentelemetry.sdk._logs import LoggingHandler
-    except ImportError:  # pragma: no cover
-        from opentelemetry.instrumentation.logging.handler import LoggingHandler
+    # O LoggingHandler do opentelemetry-sdk está obsoleto (e será removido); o atual
+    # vem do opentelemetry-instrumentation-logging, que está no requirements.
+    from opentelemetry.instrumentation.logging.handler import LoggingHandler
 
     provider = LoggerProvider(resource=resource)
     provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))

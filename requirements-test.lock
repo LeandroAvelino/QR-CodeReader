@@ -349,6 +349,7 @@ opentelemetry-api==1.45.2 \
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-asgi
     #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-logging
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
 opentelemetry-exporter-http-transport==0.66b2 \
@@ -382,6 +383,7 @@ opentelemetry-instrumentation==0.66b2 \
     #   -c versoes-producao.txt
     #   opentelemetry-instrumentation-asgi
     #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-logging
 opentelemetry-instrumentation-asgi==0.66b2 \
     --hash=sha256:9c5ec36e6b898f18e6b07b5077c2a3bafa9abf69de98e729797b9efa465f8aa3 \
     --hash=sha256:da8a2df4589976ad483feaec150a78ec7d1947754e420b838a4942361e465bfb
@@ -391,6 +393,12 @@ opentelemetry-instrumentation-asgi==0.66b2 \
 opentelemetry-instrumentation-fastapi==0.66b2 \
     --hash=sha256:401eb9fe58cc86015ac0a6682dcaf1b4bcea32c428969853d02171d6650d1774 \
     --hash=sha256:bd226e0196990999eef77380a64527a26f35b621e681c3cad860984ecc3c23f5
+    # via
+    #   -c versoes-producao.txt
+    #   -r requirements.txt
+opentelemetry-instrumentation-logging==0.66b2 \
+    --hash=sha256:6141bc09a7868235172748e8a2cd9806549d742b4f5019ce2a571e8c157e5e7d \
+    --hash=sha256:a94210291ae10395ad617c2b69bd7c2e10f77818b8beac11368460f47c370eb1
     # via
     #   -c versoes-producao.txt
     #   -r requirements.txt
@@ -417,6 +425,7 @@ opentelemetry-semantic-conventions==0.66b2 \
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-asgi
     #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-logging
     #   opentelemetry-sdk
 opentelemetry-util-http==0.66b2 \
     --hash=sha256:7ba066ea609202e474679ddf1d0f753a1e6619bd206b36afaecba4bbb86e25d0 \
