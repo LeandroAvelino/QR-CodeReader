@@ -7,11 +7,12 @@ super-resolução, o mais eficaz para códigos densos ou danificados).
 Para na primeira leitura bem-sucedida ou quando o orçamento de tempo
 acaba (cancelamento cooperativo: conferido antes de cada variante e de
 cada decodificador; nenhuma chamada isolada é interrompida no meio).
+O prazo rígido (que interrompe uma chamada travada) fica em app/leitor.py,
+que roda esta leitura num processo separado.
 """
 
 import os
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -20,6 +21,7 @@ import numpy as np
 from . import config
 from .analyzer import analyze, recapture_hint
 from .enhancer import variants
+from .resultado import MOTIVOS, ORIENTACOES, DecodeResult  # noqa: F401 (reexportados)
 
 try:
     from pyzbar import pyzbar
@@ -59,29 +61,6 @@ if hasattr(cv2, "wechat_qrcode") and all(
 
 DECODIFICADORES = ("pyzbar", "zxing", "opencv", "wechat")
 
-# Motivos técnicos (enumerados, estáveis) e a orientação em pt-BR para o usuário final.
-ORIENTACOES = {
-    "sem_qr": (
-        "Não encontrei o QR Code na foto. Envie uma nova foto com o QR Code "
-        "inteiro aparecendo, de perto, com boa luz e sem reflexo."
-    ),
-    "qr_ilegivel": (
-        "Encontrei o QR Code, mas não consegui lê-lo. Envie uma nova foto mais "
-        "de perto, com o cupom esticado, boa luz e sem reflexo."
-    ),
-    "tempo_esgotado": (
-        "Não consegui ler o QR Code a tempo. Envie uma nova foto só do QR Code, "
-        "mais de perto, com boa luz e sem reflexo."
-    ),
-    "imagem_invalida": "Não consegui abrir a imagem. Envie a foto novamente.",
-    "tipo_nao_suportado": "Formato de imagem não aceito. Envie a foto em JPEG ou PNG.",
-    "muito_grande": "A imagem é grande demais. Envie uma foto comum do celular (até 10 MB).",
-    "pixels_demais": "A imagem é grande demais. Envie uma foto comum do celular.",
-    "ocupado": "O leitor está ocupado. Tente novamente em alguns segundos.",
-    "erro_interno": "Não consegui ler o QR Code agora. Envie a foto novamente em instantes.",
-}
-MOTIVOS = tuple(ORIENTACOES)
-
 
 class Prazo:
     """Orçamento de tempo cooperativo."""
@@ -96,42 +75,6 @@ class Prazo:
 
     def decorrido_ms(self) -> float:
         return round((time.perf_counter() - self.inicio) * 1000, 2)
-
-
-@dataclass
-class DecodeResult:
-    success: bool
-    codes: list[str] = field(default_factory=list)
-    enhancements_applied: list[str] = field(default_factory=list)
-    attempts: int = 0
-    decoder: str | None = None
-    estrategia: str | None = None
-    motivo: str | None = None
-    qr_detectado: bool = False
-    analysis: dict = field(default_factory=dict)
-    suggestion: str | None = None
-    processing_time_ms: float = 0.0
-    pre_reduzida: bool = False
-
-    @property
-    def orientacao(self) -> str | None:
-        return ORIENTACOES.get(self.motivo) if self.motivo else None
-
-    def to_dict(self) -> dict:
-        return {
-            "success": self.success,
-            "codes": self.codes,
-            "motivo": self.motivo,
-            "orientacao": self.orientacao,
-            "qr_detectado": self.qr_detectado,
-            "estrategia": self.estrategia,
-            "decoder": self.decoder,
-            "attempts": self.attempts,
-            "enhancements_applied": self.enhancements_applied,
-            "analysis": self.analysis,
-            "suggestion": self.suggestion,
-            "processing_time_ms": self.processing_time_ms,
-        }
 
 
 # Cada decodificador devolve (textos lidos, achou_um_qr_sem_conseguir_ler).
@@ -169,10 +112,20 @@ def _decode_opencv(image: np.ndarray) -> tuple[list[str], bool]:
     return textos, points is not None and len(textos) < len(texts)
 
 
+def _reduzir_para_wechat(image: np.ndarray, lado_max: int) -> np.ndarray:
+    lado = max(image.shape[:2])
+    if lado <= lado_max:
+        return image
+    escala = lado_max / lado
+    return cv2.resize(image, None, fx=escala, fy=escala, interpolation=cv2.INTER_AREA)
+
+
 def _decode_wechat(image: np.ndarray) -> tuple[list[str], bool]:
     if _WECHAT_DETECTOR is None:
         return [], False
-    texts, _ = _WECHAT_DETECTOR.detectAndDecode(image)
+    # O WeChat tem super-resolução própria e lê bem em ~1200 px; acima de ~2000 px
+    # uma única chamada (não interrompível) chegou a 20-80 s em foto sem QR.
+    texts, _ = _WECHAT_DETECTOR.detectAndDecode(_reduzir_para_wechat(image, config.WECHAT_LADO_MAX))
     return [t for t in texts if t], False
 
 

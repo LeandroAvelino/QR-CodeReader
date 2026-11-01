@@ -23,9 +23,17 @@ fiscais por foto), sem porta pública e sem acesso à internet.
    variante tem um nome canônico (campo `estrategia` da resposta).
 5. **Decodificação**: em cada variante, pyzbar → zxing-cpp → OpenCV →
    **WeChatQRCode** (CNN com super-resolução), parando na primeira leitura.
-6. **Orçamento de tempo** (`QR_TEMPO_LIMITE_MS`, padrão 8 s, máximo 15 s;
-   o cliente pode pedir menos com `X-Tempo-Limite-Ms`): conferido antes de
-   cada variante e de cada decodificador (cancelamento cooperativo).
+   O WeChat recebe a imagem com lado maior de até `QR_WECHAT_LADO_MAX`
+   (1200 px): acima de ~2000 px uma única chamada dele chegou a 20–80 s numa
+   foto sem QR, e com 1200 px ele leu as mesmas imagens.
+6. **Orçamento de tempo** (`QR_TEMPO_LIMITE_MS`, padrão 8 s, mínimo 200 ms,
+   máximo 15 s; o cliente pode pedir menos com `X-Tempo-Limite-Ms`):
+   - *cooperativo*: conferido antes de cada variante e de cada decodificador;
+   - *rígido* (`app/leitor.py`): a leitura roda num **processo leitor**
+     separado. Se ele não responder em `limite + QR_FOLGA_RIGIDA_MS` (2 s),
+     é encerrado e substituído, e a resposta é `tempo_esgotado`. Se morrer
+     (ex.: falta de memória), a resposta é `erro_interno` e outro sobe.
+     O processo da API não carrega o OpenCV.
 
 Os modelos CNN do WeChatQRCode (~1 MB) ficam em `models/wechat_qrcode/`
 (idênticos aos de `WeChatCV/opencv_3rdparty`, branch `wechat_qrcode`).
@@ -89,16 +97,18 @@ Quando não lê, `success` é `false` e vêm dois campos estáveis:
 | `erro_interno` | 500 | falha inesperada |
 
 Exemplo: `{"success": false, "motivo": "sem_qr", "orientacao": "Não encontrei o QR Code na foto. Envie uma nova foto com o QR Code inteiro aparecendo, de perto, com boa luz e sem reflexo.", "suggestion": "...dica pelo diagnóstico..."}`.
-O texto de cada motivo está em `ORIENTACOES` (`app/decoder.py`). `suggestion` continua
+O texto de cada motivo está em `ORIENTACOES` (`app/resultado.py`). `suggestion` continua
 trazendo a dica montada pelo diagnóstico da imagem (pode variar).
 
 ### `GET /health`, `GET /ready`, `GET /metrics`
 
 - `/health`: vivo (`{"status":"ok","versao":...}`); responde mesmo durante uma leitura longa.
-- `/ready`: 200 só se os modelos WeChatQRCode estiverem carregados.
+- `/ready`: 200 só quando o processo leitor está pronto e com os modelos WeChatQRCode
+  carregados (`iniciando` ou `sem_modelos_wechat` com 503).
 - `/metrics`: métricas Prometheus (`qrcode_requisicoes_total`, `qrcode_leitura_duracao_seconds`,
   `qrcode_estrategia_total`, `qrcode_tentativas`, `qrcode_imagem_bytes`, `qrcode_imagem_megapixels`,
-  `qrcode_falhas_total`, `qrcode_em_andamento`, `qrcode_build_info` e `process_*`).
+  `qrcode_falhas_total`, `qrcode_leitor_reinicios_total`, `qrcode_leitor_memoria_bytes`, `qrcode_em_andamento`,
+  `qrcode_build_info` e `process_*` (este só do processo da API).
 
 `/docs` (Swagger) só existe com `QR_DOCS=true` (desligado na imagem de produção).
 
@@ -150,14 +160,19 @@ Fotos reais (cupons com dados pessoais) ficam em `samples/` e saídas em
 `requirements.txt` (faixas) → `requirements.lock` (fixado com hashes):
 
 ```bash
-pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock requirements.txt
+# versoes-producao.txt: "pacote==versão" do requirements.lock atual (+ pacote novo), temporário
+uv pip compile --generate-hashes --python-version 3.13 --python-platform x86_64-manylinux_2_28 \
+  -c versoes-producao.txt -o requirements.lock requirements.txt
+uv pip compile --generate-hashes --python-version 3.13 --python-platform x86_64-manylinux_2_28 \
+  -c versoes-producao.txt -o requirements-test.lock requirements-test.txt
 ```
 
-`requirements-test.lock` é gerado com as mesmas versões (restrição pelo
-`requirements.lock`) mais pytest, httpx, qrcode e pillow.
+Sem `-c`, o comando atualiza todas as versões (fazer de propósito, com os testes).
+`requirements-test.lock` traz as mesmas versões mais pytest, httpx, qrcode e pillow.
 
 ## Ajuste de parâmetros
 
 Limiares da análise em `app/analyzer.py`; limites operacionais por variável de
 ambiente em `app/config.py` (`QR_TEMPO_LIMITE_MS`, `QR_CONCORRENCIA`,
-`QR_MAX_BYTES`, `QR_MAX_PIXELS`, `QR_LADO_MAX`, `QR_DOCS`, `QR_VERSAO`).
+`QR_FOLGA_RIGIDA_MS`, `QR_MAX_BYTES`, `QR_MAX_PIXELS`, `QR_LADO_MAX`,
+`QR_WECHAT_LADO_MAX`, `QR_DOCS`, `QR_VERSAO`).

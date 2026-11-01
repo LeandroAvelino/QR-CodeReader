@@ -5,8 +5,9 @@ Proteções (ordem em POST /decode):
 2. Corpo acima do limite (Content-Length ou contagem durante a leitura) -> 413.
 3. Tipo real pelos bytes: só JPEG e PNG -> senão 415.
 4. Pixels declarados no cabeçalho acima do limite -> 413 (antes de descomprimir).
-5. Leitura numa thread separada (o event loop segue respondendo /health),
-   com orçamento de tempo cooperativo.
+5. Leitura num processo separado (app/leitor.py): o event loop segue
+   respondendo /health, o orçamento de tempo é cooperativo dentro da leitura
+   e rígido por fora (limite + folga; passou disso o processo é encerrado).
 """
 
 import asyncio
@@ -14,6 +15,7 @@ import logging
 import re
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
@@ -24,8 +26,9 @@ from starlette.datastructures import Headers, UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
 from . import config, metricas
-from .decoder import ORIENTACOES, decode_image
 from .imagem import ImagemRecusada, validar
+from .leitor import FalhaLeitor, Leitor, TempoEsgotado
+from .resultado import ORIENTACOES, DecodeResult
 from .telemetry import setup_telemetry
 
 logger = logging.getLogger("qr_reader")
@@ -35,7 +38,21 @@ _RE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 _RE_EXEC = re.compile(r"^\d{1,20}$")
 ORIGENS = {"n8n-cadastro", "manual", "teste"}
 
+leitor = Leitor(n=config.CONCORRENCIA)
+metricas.LEITOR_MEMORIA.set_function(lambda: leitor.memoria_bytes())
+
+
+@asynccontextmanager
+async def _ciclo_de_vida(_app: FastAPI):
+    leitor.iniciar()  # carrega OpenCV e modelos já na subida, não na primeira leitura
+    try:
+        yield
+    finally:
+        leitor.encerrar()
+
+
 app = FastAPI(
+    lifespan=_ciclo_de_vida,
     title="QR Code Reader API",
     description=(
         "Recebe uma imagem (JPEG ou PNG), analisa brilho, contraste e nitidez, "
@@ -74,7 +91,7 @@ def _limite_ms(request: Request) -> int:
         pedido = int(request.headers.get("x-tempo-limite-ms", ""))
     except ValueError:
         return config.TEMPO_LIMITE_MS
-    return max(200, min(pedido, config.TEMPO_LIMITE_MAX_MS))
+    return max(config.TEMPO_LIMITE_MIN_MS, min(pedido, config.TEMPO_LIMITE_MAX_MS))
 
 
 def _resposta_falha(status: int, motivo: str, detalhe: str, ctx: dict, inicio: float, evento: str = "qrcode.recusa") -> JSONResponse:
@@ -139,12 +156,11 @@ def health() -> dict:
 
 @app.get("/ready")
 def ready() -> JSONResponse:
-    from .decoder import _WECHAT_DETECTOR
-
-    pronto = _WECHAT_DETECTOR is not None
+    pronto, wechat = leitor.pronto()
+    status = "ok" if pronto and wechat else ("sem_modelos_wechat" if pronto else "iniciando")
     return JSONResponse(
-        {"status": "ok" if pronto else "sem_modelos_wechat", "versao": config.VERSAO},
-        status_code=200 if pronto else 503,
+        {"status": status, "versao": config.VERSAO},
+        status_code=200 if status == "ok" else 503,
     )
 
 
@@ -197,10 +213,21 @@ async def _decodificar(request: Request, ctx: dict, inicio: float):
         span.set_attribute("qrcode.imagem.largura", largura)
         span.set_attribute("qrcode.imagem.altura", altura)
         try:
-            result = await run_in_threadpool(decode_image, dados, largura, altura, limite)
+            result = await run_in_threadpool(
+                leitor.ler, dados, largura, altura, limite, config.FOLGA_RIGIDA_MS
+            )
+        except TempoEsgotado:
+            result = DecodeResult(
+                success=False,
+                motivo="tempo_esgotado",
+                processing_time_ms=round((time.perf_counter() - inicio) * 1000, 2),
+            )
         except ValueError:
             span.set_attribute("qrcode.resultado", "recusado")
             return _resposta_falha(400, "imagem_invalida", "Arquivo não é uma imagem válida.", ctx, inicio)
+        except FalhaLeitor:
+            span.set_attribute("qrcode.resultado", "erro")
+            return _resposta_falha(500, "erro_interno", "Falha interna na leitura.", ctx, inicio)
         except Exception:  # noqa: BLE001 - qualquer falha vira 500 com motivo estável
             logger.exception("falha interna na leitura", extra={**ctx, "event.name": "qrcode.erro"})
             span.set_attribute("qrcode.resultado", "erro")

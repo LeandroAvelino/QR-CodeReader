@@ -2,8 +2,9 @@
 
 Todos os labels têm valores de uma lista fixa (baixa cardinalidade).
 Também expõe as métricas padrão do processo (process_cpu_seconds_total,
-process_resident_memory_bytes, process_start_time_seconds), que servem de
-"recursos do contêiner" porque a API roda num único processo.
+process_resident_memory_bytes, process_start_time_seconds), que são só do
+processo da API; a memória do processo leitor (onde a decodificação acontece)
+fica em qrcode_leitor_memoria_bytes.
 """
 
 from prometheus_client import Counter, Gauge, Histogram
@@ -45,6 +46,15 @@ FALHAS = Counter(
     "qrcode_falhas",
     "Leituras e requisições que não devolveram QR Code, por motivo técnico.",
     ["motivo"],
+)
+REINICIOS = Counter(
+    "qrcode_leitor_reinicios",
+    "Processos leitores encerrados e substituídos (prazo rígido estourado ou processo morto).",
+    ["motivo"],
+)
+LEITOR_MEMORIA = Gauge(
+    "qrcode_leitor_memoria_bytes",
+    "Memória residente (RSS) somada dos processos leitores.",
 )
 EM_ANDAMENTO = Gauge("qrcode_em_andamento", "Leituras em andamento agora.")
 BUILD = Gauge("qrcode_build_info", "Versão em execução (valor sempre 1).", ["versao"])

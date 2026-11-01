@@ -8,6 +8,7 @@ import struct
 import threading
 import time
 import zlib
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -15,9 +16,11 @@ import pytest
 import qrcode
 from fastapi.testclient import TestClient
 
-from app import config, imagem, main
+import alvos_leitor
+from app import config, decoder, imagem, main
 from app.decoder import MOTIVOS, ORIENTACOES, decode_image
 from app.enhancer import NOMES_VARIANTES
+from app.leitor import FalhaLeitor, Leitor, TempoEsgotado
 from app.telemetry import FormatoJson
 
 NFCE = (
@@ -187,14 +190,25 @@ def test_ocupado_responde_503_sem_ler_corpo(client, monkeypatch):
     assert r.headers["retry-after"] == "5"
 
 
-def test_health_responde_durante_leitura_longa(client, monkeypatch):
-    original = main.decode_image
+@pytest.fixture()
+def leitor_de_teste(monkeypatch):
+    """Troca o processo leitor da API por um com função-alvo de teste."""
+    criados = []
 
-    def lento(*args, **kwargs):
-        time.sleep(2.0)
-        return original(*args, **kwargs)
+    def trocar(alvo, carregar=alvos_leitor.carregar_ok):
+        lt = Leitor(n=1, alvo=alvo, carregar=carregar)
+        lt.iniciar()
+        criados.append(lt)
+        monkeypatch.setattr(main, "leitor", lt)
+        return lt
 
-    monkeypatch.setattr(main, "decode_image", lento)
+    yield trocar
+    for lt in criados:
+        lt.encerrar()
+
+
+def test_health_responde_durante_leitura_longa(client, leitor_de_teste):
+    leitor_de_teste(alvos_leitor.lento)
     dados = png(qr_cinza())
     resultado = {}
 
@@ -212,6 +226,77 @@ def test_health_responde_durante_leitura_longa(client, monkeypatch):
     assert h.status_code == 200 and gasto_health < 0.5
     assert ocupado.status_code == 503
     assert resultado["r"].status_code == 200 and resultado["r"].json()["success"] is True
+
+
+# --- prazo rígido (processo leitor) -------------------------------------------
+
+def test_prazo_rigido_encerra_chamada_travada_e_reinicia():
+    lt = Leitor(n=1, alvo=alvos_leitor.trava_ou_morre, carregar=alvos_leitor.carregar_ok)
+    try:
+        lt.iniciar()
+        assert lt.ler(b"ok", 1, 1, 1000, 500).success  # processo pronto antes de medir
+        pid = lt._todos[0].proc.pid
+        inicio = time.perf_counter()
+        with pytest.raises(TempoEsgotado):
+            lt.ler(b"trava", 1, 1, 300, 500)
+        assert time.perf_counter() - inicio < 1.5
+        assert lt._todos[0].proc.pid != pid  # o processo travado foi trocado
+        assert lt.ler(b"ok", 1, 1, 8000, 2000).codes == ["ok"]
+    finally:
+        lt.encerrar()
+
+
+def test_processo_leitor_morto_vira_falha_e_reinicia():
+    lt = Leitor(n=1, alvo=alvos_leitor.trava_ou_morre, carregar=alvos_leitor.carregar_ok)
+    try:
+        with pytest.raises(FalhaLeitor):
+            lt.ler(b"morre", 1, 1, 8000, 2000)
+        with pytest.raises(ValueError):
+            lt.ler(b"invalida", 1, 1, 8000, 2000)  # erro de imagem não derruba o processo
+        assert lt.ler(b"ok", 1, 1, 8000, 2000).success
+    finally:
+        lt.encerrar()
+
+
+def test_api_responde_tempo_esgotado_quando_o_prazo_rigido_estoura(client, leitor_de_teste, monkeypatch):
+    monkeypatch.setattr(config, "FOLGA_RIGIDA_MS", 500)
+    leitor_de_teste(alvos_leitor.lento)  # 2 s de espera: estoura 300 ms + 500 ms de folga
+    inicio = time.perf_counter()
+    r = client.post("/decode", content=png(qr_cinza()),
+                    headers={"Content-Type": "image/png", "X-Tempo-Limite-Ms": "300"})
+    assert time.perf_counter() - inicio < 1.8
+    assert r.status_code == 200
+    assert r.json()["motivo"] == "tempo_esgotado"
+    assert r.json()["orientacao"] == ORIENTACOES["tempo_esgotado"]
+    m = client.get("/metrics").text
+    assert 'qrcode_leitor_reinicios_total{motivo="prazo"}' in m
+
+
+def test_ready_reflete_o_processo_leitor(client):
+    for _ in range(100):  # o processo leitor carrega o OpenCV na subida
+        r = client.get("/ready")
+        if r.status_code == 200:
+            break
+        time.sleep(0.2)
+    assert r.status_code == 200 and r.json()["status"] == "ok"
+    assert main.leitor.memoria_bytes() > 10 * 1024 * 1024  # processo leitor com OpenCV carregado
+
+
+def test_wechat_recebe_imagem_reduzida():
+    grande = np.zeros((2200, 1650), dtype=np.uint8)
+    assert max(decoder._reduzir_para_wechat(grande, 1200).shape) == 1200
+    pequena = np.zeros((900, 700), dtype=np.uint8)
+    assert decoder._reduzir_para_wechat(pequena, 1200) is pequena
+
+
+def test_processo_da_api_nao_carrega_opencv():
+    import subprocess
+    import sys
+
+    codigo = "import sys, app.main; print('cv2' in sys.modules)"
+    raiz = Path(__file__).resolve().parent.parent
+    saida = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True, check=True, cwd=raiz)
+    assert saida.stdout.strip() == "False"
 
 
 def test_log_sem_conteudo_do_qr_nem_nome_de_arquivo(client, caplog):
@@ -236,5 +321,5 @@ def test_metrics_expoe_contadores(client):
     m = client.get("/metrics").text
     for nome in ("qrcode_requisicoes_total", "qrcode_leitura_duracao_seconds_bucket",
                  "qrcode_estrategia_total", "qrcode_imagem_bytes_bucket", "qrcode_build_info",
-                 "qrcode_em_andamento"):
+                 "qrcode_em_andamento", "qrcode_leitor_memoria_bytes"):
         assert nome in m, nome
