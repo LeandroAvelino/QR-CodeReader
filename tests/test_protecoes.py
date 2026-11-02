@@ -1,6 +1,7 @@
 """Testes das proteções de produção: limites, tipos, prazo, concorrência, logs e métricas."""
 
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -129,6 +130,29 @@ def test_corpo_cru_jpeg_e_request_id(client):
     assert body["estrategia"] in NOMES_VARIANTES
     assert body["requisicao_id"] == "cad-1-exec-99"
     assert r.headers["x-request-id"] == "cad-1-exec-99"
+
+
+def test_corpo_base64_le_o_qr(client):
+    ok, jpg = cv2.imencode(".jpg", qr_cinza(box=8), [cv2.IMWRITE_JPEG_QUALITY, 90])
+    r = client.post("/decode", content=base64.b64encode(jpg.tobytes()), headers={
+        "Content-Type": "application/base64", "X-Request-Id": "cad-2-exec-7"})
+    assert r.status_code == 200
+    assert r.json()["codes"] == [NFCE]
+
+
+def test_corpo_base64_invalido_e_tipo_real_continuam_conferidos(client):
+    r = client.post("/decode", content=b"isto nao e base64 !!!", headers={"Content-Type": "application/base64"})
+    assert r.status_code == 400 and r.json()["motivo"] == "imagem_invalida"
+    # base64 válido de algo que não é imagem -> mesmo 415 do corpo cru
+    r = client.post("/decode", content=base64.b64encode(b"%PDF-1.4 qualquer coisa"), headers={"Content-Type": "application/base64"})
+    assert r.status_code == 415 and r.json()["motivo"] == "tipo_nao_suportado"
+
+
+def test_corpo_base64_respeita_o_limite_de_bytes(client, monkeypatch):
+    monkeypatch.setattr(config, "MAX_BYTES", 2048)
+    monkeypatch.setattr(config, "FOLGA_MULTIPART", 0)
+    r = client.post("/decode", content=base64.b64encode(b"\xff\xd8\xff" + b"0" * 5000), headers={"Content-Type": "application/base64"})
+    assert r.status_code == 413 and r.json()["motivo"] == "muito_grande"
 
 
 def test_request_id_invalido_vira_uuid(client):
