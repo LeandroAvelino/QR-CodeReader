@@ -101,7 +101,7 @@ def curved_paper(gray: np.ndarray) -> np.ndarray:
 def test_health():
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json()["status"] == "ok"
 
 
 def test_decode_clean_image():
@@ -140,8 +140,9 @@ def test_rejects_non_image_content_type():
 
 
 def test_rejects_invalid_image_bytes():
-    response = post_image(b"\x89PNG isso nao e uma imagem de verdade")
+    response = post_image(b"\x89PNG\r\n\x1a\n isso nao e uma imagem de verdade")
     assert response.status_code == 400
+    assert response.json()["motivo"] == "imagem_invalida"
 
 
 def test_image_without_qr_returns_success_false_with_suggestion():
@@ -152,6 +153,8 @@ def test_image_without_qr_returns_success_false_with_suggestion():
     assert body["success"] is False
     assert body["codes"] == []
     assert "Tente novamente" in body["suggestion"]
+    assert body["motivo"] == "sem_qr"
+    assert body["orientacao"].startswith("Não encontrei o QR Code")
 
 
 def test_failed_dark_image_suggests_more_light():

@@ -2,5 +2,22 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-# imagens de teste com dados pessoais (notas fiscais reais)
-samples/
+# REPOSITÓRIO PÚBLICO: notas fiscais reais (CPF, valores) nunca entram aqui.
+# Grafias com e sem maiúscula: em disco a pasta é "Samples", e fora do Windows
+# o casamento do .gitignore é sensível a maiúsculas.
+[Ss]amples/
+[Aa]mostras/
+# saídas do benchmark (podem conter fotos reais)
+bench/saida/
+# Rede de segurança: nenhuma foto é versionada, em qualquer pasta. Os modelos do
+# WeChat são .caffemodel/.prototxt, então não são afetados. Para versionar uma
+# imagem de propósito (um print no README, por exemplo): git add -f <arquivo>
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.tar.gz

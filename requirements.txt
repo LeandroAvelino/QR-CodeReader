@@ -1,12 +1,21 @@
+# Dependências diretas (faixas). A instalação usa requirements.lock (versões e hashes fixados),
+# gerado mantendo as versões já fixadas (versoes-producao.txt = "pacote==versão" do lock atual,
+# mais o pacote novo, arquivo temporário):
+#   uv pip compile --generate-hashes --python-version 3.13 --python-platform x86_64-manylinux_2_28 \
+#     -c versoes-producao.txt -o requirements.lock requirements.txt
 fastapi>=0.110
-uvicorn[standard]>=0.29
+# sem [standard]: h11 puro basta para o volume baixo (menos dependências nativas)
+uvicorn>=0.29
 # contrib 4.x: inclui o WeChatQRCode com suporte aos modelos Caffe
 opencv-contrib-python-headless>=4.9,<5
 pyzbar>=0.1.9
+# 2.2+: return_errors (distingue "QR detectado mas ilegível")
 zxing-cpp>=2.2
 numpy>=1.26
 python-multipart>=0.0.9
+prometheus-client>=0.20
 opentelemetry-sdk>=1.25
 opentelemetry-exporter-otlp-proto-http>=1.25
 opentelemetry-instrumentation-fastapi>=0.46b0
+# handler de logs OTLP (o do opentelemetry-sdk está obsoleto)
 opentelemetry-instrumentation-logging>=0.46b0
