@@ -3,7 +3,8 @@
 Proteções (ordem em POST /decode):
 1. Leitor ocupado (semáforo cheio) -> 503 "ocupado" sem ler o corpo.
 2. Corpo acima do limite (Content-Length ou contagem durante a leitura) -> 413.
-3. Tipo real pelos bytes: só JPEG e PNG -> senão 415.
+3. Tipo real pelos bytes: só JPEG e PNG -> senão 415. O corpo pode ser a imagem crua, multipart (campo "file")
+   ou texto base64 (Content-Type application/base64): clientes que só enviam texto, como o Code node do n8n, usam este.
 4. Pixels declarados no cabeçalho acima do limite -> 413 (antes de descomprimir).
 5. Leitura num processo separado (app/leitor.py): o event loop segue
    respondendo /health, o orçamento de tempo é cooperativo dentro da leitura
@@ -11,6 +12,8 @@ Proteções (ordem em POST /decode):
 """
 
 import asyncio
+import base64
+import binascii
 import logging
 import re
 import time
@@ -114,7 +117,13 @@ def _resposta_falha(status: int, motivo: str, detalhe: str, ctx: dict, inicio: f
     return JSONResponse(corpo, status_code=status, headers=headers)
 
 
+def _eh_base64(request: Request) -> bool:
+    return request.headers.get("content-type", "").lower().startswith("application/base64")
+
+
 async def _ler_corpo(request: Request, limite: int) -> bytes:
+    if _eh_base64(request):
+        limite = limite * 4 // 3 + 4  # base64 ocupa 4/3 do binário; o limite de bytes da imagem é conferido depois de decodificar
     tamanho = request.headers.get("content-length")
     if tamanho and tamanho.isdigit() and int(tamanho) > limite:
         raise CorpoGrande()
@@ -129,8 +138,13 @@ async def _ler_corpo(request: Request, limite: int) -> bytes:
 
 
 async def _extrair_imagem(request: Request, corpo: bytes) -> bytes:
-    """Aceita multipart (campo "file") ou o corpo cru (Content-Type image/jpeg|png|octet-stream)."""
+    """Aceita multipart (campo "file"), texto base64 (application/base64) ou o corpo cru (image/jpeg|png|octet-stream)."""
     tipo = request.headers.get("content-type", "")
+    if _eh_base64(request):
+        try:
+            return base64.b64decode(corpo.strip(), validate=True)
+        except (binascii.Error, ValueError):
+            raise ImagemRecusada("imagem_invalida", "Corpo base64 inválido.") from None
     if not tipo.lower().startswith("multipart/form-data"):
         return corpo
 
