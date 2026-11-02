@@ -279,6 +279,8 @@ def test_ready_reflete_o_processo_leitor(client):
             break
         time.sleep(0.2)
     assert r.status_code == 200 and r.json()["status"] == "ok"
+    if not Path("/proc").exists():
+        pytest.skip("memoria_bytes() mede o RSS via /proc, que só existe no Linux")
     assert main.leitor.memoria_bytes() > 10 * 1024 * 1024  # processo leitor com OpenCV carregado
 
 
